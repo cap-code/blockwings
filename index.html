@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#79b6ff">
+<title>BlockWings — Voxel Earth Flight Simulator</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>✈</text></svg>">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<!-- HUD -->
+<div id="hud" class="hidden">
+  <div id="hudPlane">—</div>
+  <div class="hudRow"><span class="hudLbl">SPD</span><span id="hudSpd">0</span> km/h</div>
+  <div class="hudRow"><span class="hudLbl">ALT</span><span id="hudAlt">0 m</span></div>
+  <div class="hudRow"><span class="hudLbl">HDG</span><span id="hudHdg">0</span>°</div>
+  <div class="hudRow" id="hudPos">0.0°N 0.0°E</div>
+  <div class="hudRow"><span class="hudLbl">THR</span>
+    <div id="thrBar"><div id="thrFill"></div></div>
+  </div>
+  <div id="hudStatus"></div>
+</div>
+
+<!-- combat HUD -->
+<div id="combatBar" class="hidden">
+  <div class="cbRow"><span class="cbLbl">HP</span><div class="cbBar"><div id="hpFill"></div></div></div>
+  <div class="cbRow"><span class="cbLbl">🌟</span><div class="cbBar ultra"><div id="ultraFill"></div></div></div>
+  <div class="cbRow small"><span class="cbLbl">🔥</span><div class="cbBar heat"><div id="heatFill"></div></div>
+    <span id="mslCount">🚀8</span><span id="bombReady">💣</span></div>
+  <div id="ultraHint"></div>
+</div>
+<div id="crosshair" class="hidden">+</div>
+<!-- mouse flight: steering reticle, lead pip, off-screen target arrow -->
+<div id="mfRing" class="hidden"></div>
+<div id="mfDot" class="hidden"></div>
+<div id="leadPip" class="hidden">◇</div>
+<div id="tgtArrow" class="hidden">➤</div>
+<div id="lockBox" class="hidden"><span id="lockLabel"></span></div>
+<div id="mslWarn" class="hidden">⚠ MISSILE ⚠</div>
+<div id="mfHint" class="hidden"></div>
+<div id="killfeed"></div>
+<div id="scoreboard" class="hidden"></div>
+
+<canvas id="minimap" class="hidden" width="360" height="180"></canvas>
+
+<div id="topButtons" class="hidden">
+  <button class="iconBtn" id="btnMenu" title="Planes / menu">✈</button>
+  <button class="iconBtn" id="btnCam" title="Camera">🎥</button>
+  <button class="iconBtn" id="btnMap" title="Map size">🗺</button>
+  <button class="iconBtn" id="btnSnd" title="Sound">🔊</button>
+</div>
+
+<div id="msg"></div>
+<div id="flash"></div>
+
+<!-- Start / plane menu -->
+<div id="menu">
+  <div id="menuInner">
+    <h1>BLOCK<span>WINGS</span></h1>
+    <p class="tagline">Voxel flight simulator · the entire Earth, one block at a time</p>
+    <div id="loading">Generating planet Earth…</div>
+    <div id="menuBody" class="hidden">
+      <h2>Choose your aircraft</h2>
+      <div id="planeGrid"></div>
+      <div id="modeRow">
+        <button class="modeBtn sel" data-mode="free">🗺 FREE FLIGHT</button>
+        <button class="modeBtn" data-mode="bots">🤖 VS BOTS</button>
+        <button class="modeBtn" data-mode="online">🌐 ONLINE</button>
+      </div>
+      <div id="menuOpts">
+        <label>Callsign
+          <input id="nameInp" maxlength="12" placeholder="Maverick">
+        </label>
+        <label>Start location
+          <select id="spawnSel"></select>
+        </label>
+        <label id="serverLbl" class="hidden">Server
+          <input id="serverInp" placeholder="ws://localhost:8081">
+        </label>
+        <label class="chk"><input type="checkbox" id="invertChk"> Invert pitch (push = up)</label>
+      </div>
+      <div id="menuBtns">
+        <button id="garageBtn">🔧 GARAGE</button>
+        <button id="flyBtn">TAKE OFF ▶</button>
+      </div>
+      <div id="helpText">
+        <b>🖱 Mouse flight (best for dogfights):</b> click the screen in flight —
+        mouse = stick · LMB guns · RMB missile · wheel throttle · middle-click
+        center · Esc release. Hold an enemy in the nose cone to <b>🔒 LOCK</b>,
+        then missiles chase them; a red ◇ marks the gun aim-ahead point.<br>
+        <b>Keyboard:</b> W/S or ↑/↓ pitch · A/D or ←/→ roll · Q/E rudder ·
+        Shift throttle up · Z throttle down · X air-brake ·
+        <b>Space guns · V missile · F bomb · G ultra · Tab scores</b> ·
+        C camera · M map · R reset · Esc menu<br>
+        <b>Mobile:</b> left stick = fly · right slider = throttle · ◀ ▶ = rudder ·
+        🔫 hold to fire · 🚀 missile · 💣 bomb · 🌟 ultra<br>
+        <b>Takeoff & landing:</b> every aircraft has its own envelope — roll past
+        its <b>Vr</b> speed and pull up; land slow and shallow (watch the 🛬 HUD
+        line). Jets and airliners need a paved runway; bush planes land rough.
+        Each airframe also has a service ceiling — only the 🛰 shuttle reaches space.<br>
+        <b>🚁 Helicopter:</b> throttle is the collective — above 50% climbs, below
+        sinks · tilt nose down to fly forward · hover and set down anywhere.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- garage -->
+<div id="garage" class="hidden">
+  <div id="garageInner">
+    <h2 id="garageTitle">GARAGE</h2>
+    <canvas id="garageView" width="420" height="260"></canvas>
+    <div id="garageStats"></div>
+    <div id="garageBody"></div>
+    <button id="garageClose">DONE ✔</button>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

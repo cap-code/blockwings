@@ -1,0 +1,13 @@
+{
+  "name": "blockwings",
+  "version": "1.0.0",
+  "description": "BlockWings — voxel Earth flight sim with multiplayer dogfights",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "serve": "python3 -m http.server 8080"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
