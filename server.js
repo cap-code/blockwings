@@ -13,6 +13,9 @@ const fs = require('fs');
 const path = require('path');
 
 const PORT = process.env.PORT || 8081;
+// Bind to 127.0.0.1 in production so only the local nginx reverse proxy can
+// reach Node; leave it at 0.0.0.0 for local dev (HOST unset).
+const HOST = process.env.HOST || '0.0.0.0';
 const RESPAWN_MS = 4000;
 const MAX_PLAYERS = 100;          // per room
 const MAX_TEAM = 4;               // members per team
@@ -43,7 +46,10 @@ const httpServer = http.createServer((req, res) => {
   });
 });
 
-const wss = new WebSocketServer({ server: httpServer });
+// WebSocket lives on a dedicated /ws path so nginx can serve the static client
+// itself and reverse-proxy only the game traffic. maxPayload caps frame size to
+// reject oversized-message abuse (our largest message is well under 1 KB).
+const wss = new WebSocketServer({ server: httpServer, path: '/ws', maxPayload: 16 * 1024 });
 
 // Players are grouped into rooms keyed by a 4-digit code. Each room holds up to
 // MAX_PLAYERS pilots; within a room they can band into teams (up to MAX_TEAM
@@ -235,6 +241,6 @@ setInterval(() => {
   }
 }, 15000);
 
-httpServer.listen(PORT, () => {
-  console.log(`BlockWings on http://0.0.0.0:${PORT}  (game client + ws arena)`);
+httpServer.listen(PORT, HOST, () => {
+  console.log(`BlockWings on http://${HOST}:${PORT}  (game client + ws arena, ws path /ws)`);
 });

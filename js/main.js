@@ -523,11 +523,11 @@ function buildMenu() {
   });
   const srvInp = $('serverInp');
   srvInp.value = localStorage.getItem('bw.server') ||
-    // Over HTTPS (e.g. a Cloudflare tunnel) connect same-origin on 443; locally
-    // fall back to the standalone ws port.
+    // The WebSocket lives at /ws. Over HTTPS (e.g. behind nginx/Cloudflare)
+    // connect same-origin on 443; locally fall back to the standalone ws port.
     (location.protocol === 'https:'
-      ? 'wss://' + location.host
-      : 'ws://' + (location.hostname || 'localhost') + ':8081');
+      ? 'wss://' + location.host + '/ws'
+      : 'ws://' + (location.hostname || 'localhost') + ':8081/ws');
 
   // bot gunnery skill — lower = bots fly the same but spray their shots wide
   const botAimInp = $('botAimInp');
