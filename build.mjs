@@ -28,34 +28,36 @@ const result = await esbuild.build({
 });
 const minified = result.outputFiles[0].text;
 
-// 2) Obfuscate. Settings are strong on readability protection but deliberately
-//    moderate on the runtime-heavy transforms (controlFlowFlattening,
-//    deadCodeInjection) so the 60 fps game loop isn't bogged down. Dial these
-//    up for more protection or down if you ever see frame drops.
+// 2) Obfuscate — LIGHT preset. The code is minified, identifiers are mangled to
+//    hex, and string literals are moved into an indirection array, so the
+//    Network tab shows an unreadable blob. But every runtime-heavy transform is
+//    OFF, because BlockWings runs a 60 fps physics/render loop and those
+//    transforms add per-operation cost that causes exactly the lag you saw:
+//      - controlFlowFlattening : straight-line code → while/switch dispatcher
+//      - numbersToExpressions  : every number literal → arithmetic at runtime
+//      - deadCodeInjection     : extra branches that execute each frame
+//      - splitStrings / base64 : string decode work on access
+//    Keeping only minify + name-mangle + string-array (no encoding) means the
+//    bundle runs at essentially minified speed.
 const obfuscated = JavaScriptObfuscator.obfuscate(minified, {
   target: 'browser',
   compact: true,
-  controlFlowFlattening: true,
-  controlFlowFlatteningThreshold: 0.5,
-  deadCodeInjection: true,
-  deadCodeInjectionThreshold: 0.2,
   identifierNamesGenerator: 'hexadecimal',
-  numbersToExpressions: true,
   simplify: true,
-  splitStrings: true,
-  splitStringsChunkLength: 8,
   stringArray: true,
-  stringArrayThreshold: 0.75,
-  stringArrayEncoding: ['base64'],
-  // transformObjectKeys is intentionally OFF: BlockWings sends objects like
-  // {t:'join'} as JSON to the (non-obfuscated) server, so object keys are wire
-  // format and must not be altered. Identifier mangling doesn't touch property
-  // names, so the protocol stays intact.
+  stringArrayThreshold: 0.5,
+  stringArrayEncoding: [],          // plain indirection, no runtime decoding
+  splitStrings: false,
+  // runtime-heavy transforms — all OFF for game-loop performance:
+  controlFlowFlattening: false,
+  deadCodeInjection: false,
+  numbersToExpressions: false,
+  // OFF for correctness: object keys are JSON wire format to the server,
+  // and these can break or slow things down:
   transformObjectKeys: false,
-  unicodeEscapeSequence: false,
-  // left OFF on purpose — these break easily or hurt perf:
   selfDefending: false,
   debugProtection: false,
+  unicodeEscapeSequence: false,
 }).getObfuscatedCode();
 
 writeFileSync('dist/app.min.js', obfuscated);
