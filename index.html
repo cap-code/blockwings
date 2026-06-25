@@ -15,6 +15,7 @@
 
 <!-- HUD -->
 <div id="hud" class="hidden">
+  <div id="hudRoom" class="hidden"></div>
   <div id="hudPlane">—</div>
   <div class="hudRow"><span class="hudLbl">SPD</span><span id="hudSpd">0</span> km/h</div>
   <div class="hudRow"><span class="hudLbl">ALT</span><span id="hudAlt">0 m</span></div>
@@ -45,6 +46,7 @@
 <div id="mfHint" class="hidden"></div>
 <div id="killfeed"></div>
 <div id="scoreboard" class="hidden"></div>
+<div id="matchTimer" class="hidden">10:00</div>
 
 <canvas id="minimap" class="hidden" width="360" height="180"></canvas>
 
@@ -82,7 +84,23 @@
         <label id="serverLbl" class="hidden">Server
           <input id="serverInp" placeholder="ws://localhost:8081">
         </label>
+        <label id="roomLbl" class="hidden">Room code <small>(blank = create new)</small>
+          <input id="roomInp" maxlength="4" inputmode="numeric" pattern="[0-9]*" placeholder="blank = new room">
+        </label>
+        <label id="teamLbl" class="hidden">Squad
+          <select id="teamSel">
+            <option value="solo">🦅 Fly solo</option>
+            <option value="team">👥 Team up</option>
+          </select>
+        </label>
+        <label id="teamNameLbl" class="hidden">Team name
+          <input id="teamNameInp" maxlength="10" placeholder="Red Squad">
+        </label>
         <label class="chk"><input type="checkbox" id="invertChk"> Invert pitch (push = up)</label>
+        <label id="botAimLbl">Bot gunnery skill: <span id="botAimVal">60%</span>
+          <input type="range" id="botAimInp" min="0" max="100" step="5" value="60">
+          <small>Lower = bots still chase you, but shoot wild.</small>
+        </label>
       </div>
       <div id="menuBtns">
         <button id="garageBtn">🔧 GARAGE</button>
@@ -106,6 +124,35 @@
         <b>🚁 Helicopter:</b> throttle is the collective — above 50% climbs, below
         sinks · tilt nose down to fly forward · hover and set down anywhere.
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- multiplayer lobby -->
+<div id="lobby" class="hidden">
+  <div id="lobbyInner">
+    <h2>🌐 MULTIPLAYER LOBBY</h2>
+    <div id="lobbyCode">ROOM <b>----</b></div>
+    <p class="lobbyHint">Share this code so friends can join. The host starts the match —
+      most kills in <b>10 minutes</b> wins. Teammates can't damage each other.</p>
+    <div id="lobbyList"></div>
+    <div id="lobbyWait" class="hidden">⏳ Waiting for the host to start the match…</div>
+    <div id="lobbyBtns">
+      <button id="lobbyLeave">🚪 LEAVE</button>
+      <button id="lobbyStart">START GAME ▶</button>
+    </div>
+  </div>
+</div>
+
+<!-- match-over results -->
+<div id="matchOver" class="hidden">
+  <div id="matchOverInner">
+    <h2>⏱ MATCH OVER</h2>
+    <div id="matchOverBoard"></div>
+    <div id="overWait" class="hidden">⏳ Waiting for the host to start a new match…</div>
+    <div id="matchOverBtns">
+      <button id="overLeave">🚪 MENU</button>
+      <button id="overAgain">🔄 PLAY AGAIN</button>
     </div>
   </div>
 </div>

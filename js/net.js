@@ -18,6 +18,12 @@ export class Net {
     this.combat = combat;
     this.ws = null;
     this.id = null;
+    this.room = null;  // 4-digit room code, set on welcome
+    this.team = null;  // my team name, or null when flying solo
+    this.host = false; // am I the room host (the one who can start the match)?
+    this.hostId = null;
+    this.state = 'lobby'; // 'lobby' | 'playing'
+    this.remainingMs = 0; // time left when joining a match already in progress
     this.remotes = new Map(); // id -> remote
     this.handlers = {};       // myhp, kill, respawn, scores, feed
     this.sendT = 0;
@@ -43,9 +49,24 @@ export class Net {
           settled = true;
           clearTimeout(timer);
           this.id = m.id;
+          this.room = m.room || null;
+          this.team = m.team || null;
+          this.host = !!m.host;
+          this.hostId = m.hostId || null;
+          this.state = m.state || 'lobby';
+          this.remainingMs = m.ms || 0;
           for (const p of m.players) this.addRemote(p);
           if (m.scores) this.handlers.scores && this.handlers.scores(m.scores);
+          this.handlers.lobby && this.handlers.lobby({ list: m.lobby || [], state: this.state, hostId: this.hostId, host: this.host });
           resolve();
+          return;
+        }
+        if (m.t === 'error' && !settled) {
+          settled = true;
+          clearTimeout(timer);
+          const e = new Error(m.reason || 'rejected');
+          e.reason = m.reason; e.code = m.code; e.team = m.team;
+          reject(e);
           return;
         }
         this.msg(m);
@@ -140,19 +161,40 @@ export class Net {
       case 'scores':
         h.scores && h.scores(m.list);
         break;
+      case 'lobby':
+        this.hostId = m.hostId;
+        this.host = m.hostId === this.id;
+        this.state = m.state;
+        h.lobby && h.lobby({ list: m.list, state: m.state, hostId: m.hostId, host: this.host });
+        break;
+      case 'start':
+        this.state = 'playing';
+        if (m.scores) h.scores && h.scores(m.scores);
+        h.start && h.start({ ms: m.ms });
+        break;
+      case 'over':
+        this.state = 'lobby';
+        if (m.scores) h.scores && h.scores(m.scores);
+        h.over && h.over({ scores: m.scores });
+        break;
     }
   }
+
+  // host-only: ask the server to begin the 10-minute match
+  startGame() { if (this.connected) this.ws.send(JSON.stringify({ t: 'start' })); }
 
   addRemote(p) {
     if (this.remotes.has(p.id) || p.id === this.id) return;
     const def = planeById(p.plane);
     const mesh = buildPlaneMesh(def, p.paint);
-    const tag = makeNameTag(p.name || 'pilot', '#7ad7ff');
+    // teammates wear a green nametag, everyone else the usual blue
+    const ally = this.team && p.team === this.team;
+    const tag = makeNameTag((ally ? '🟢 ' : '') + (p.name || 'pilot'), ally ? '#7af07a' : '#7ad7ff');
     mesh.visible = tag.visible = false; // until the first state arrives
     this.scene.add(mesh);
     this.scene.add(tag);
     this.remotes.set(p.id, {
-      id: p.id, name: p.name || 'pilot', def, mesh, tag,
+      id: p.id, name: p.name || 'pilot', team: p.team || null, def, mesh, tag,
       buf: [], speed: 0, hp: p.hp ?? def.stats.hp, hpMax: def.stats.hp,
       alive: p.alive !== false,
     });

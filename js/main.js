@@ -238,6 +238,11 @@ const scores = new Map();    // id -> { name, kills, deaths }
 let myName = localStorage.getItem('bw.name') || '';
 let sbOpen = false;
 
+// online match state
+let matchActive = false;     // a 10-minute match is currently running
+let matchEndsAt = 0;         // performance.now() timestamp the match ends
+let lobbyData = { list: [], host: false, hostId: null, state: 'lobby' };
+
 function ensureScore(id, name) {
   if (!scores.has(id)) scores.set(id, { name, kills: 0, deaths: 0 });
   return scores.get(id);
@@ -329,13 +334,16 @@ function canCombat() {
 // ---------------------------------------------------------------- scoreboard
 function renderScoreboard() {
   const sb = $('scoreboard');
+  // online matches show the team column (with the room code in the header)
+  const showTeam = mode === 'online';
   const rows = [...scores.values()]
     .sort((a, b) => b.kills - a.kills || a.deaths - b.deaths)
     .map(s => `<tr class="${s.name === (myName || 'You') ? 'me' : ''}">
-      <td>${s.name}</td><td>${s.kills}</td><td>${s.deaths}</td></tr>`)
+      <td>${s.name}</td>${showTeam ? `<td>${s.team || '—'}</td>` : ''}<td>${s.kills}</td><td>${s.deaths}</td></tr>`)
     .join('');
-  sb.innerHTML = `<h3>🏆 SCOREBOARD</h3>
-    <table><tr><th>PILOT</th><th>KILLS</th><th>DEATHS</th></tr>${rows}</table>`;
+  const title = showTeam && net && net.room ? `🏆 ROOM ${net.room}` : '🏆 SCOREBOARD';
+  sb.innerHTML = `<h3>${title}</h3>
+    <table><tr><th>PILOT</th>${showTeam ? '<th>TEAM</th>' : ''}<th>KILLS</th><th>DEATHS</th></tr>${rows}</table>`;
 }
 
 function toggleScoreboard(force) {
@@ -479,9 +487,32 @@ function buildMenu() {
       document.querySelectorAll('.modeBtn').forEach(b => b.classList.remove('sel'));
       btn.classList.add('sel');
       mode = btn.dataset.mode;
-      $('serverLbl').classList.toggle('hidden', mode !== 'online');
+      const online = mode === 'online';
+      $('serverLbl').classList.toggle('hidden', !online);
+      $('roomLbl').classList.toggle('hidden', !online);
+      $('teamLbl').classList.toggle('hidden', !online);
+      $('teamNameLbl').classList.toggle('hidden', !online || teamSel.value !== 'team');
     });
   }
+
+  // squad selector — the team-name field only matters when teaming up, and
+  // both the room code and squad choice are remembered across visits
+  const roomInp = $('roomInp');
+  const teamSel = $('teamSel');
+  const teamNameInp = $('teamNameInp');
+  // Leave the room field empty by default so "Take off" opens a fresh room and
+  // hands you a code to share; type a friend's code in to join theirs instead.
+  teamSel.value = localStorage.getItem('bw.teamMode') || 'solo';
+  teamNameInp.value = localStorage.getItem('bw.team') || '';
+  const syncTeam = () => {
+    $('teamNameLbl').classList.toggle('hidden', mode !== 'online' || teamSel.value !== 'team');
+    localStorage.setItem('bw.teamMode', teamSel.value);
+  };
+  teamSel.addEventListener('change', syncTeam);
+  roomInp.addEventListener('input', () => {
+    roomInp.value = roomInp.value.replace(/\D/g, '').slice(0, 4);
+  });
+  teamNameInp.addEventListener('input', () => localStorage.setItem('bw.team', teamNameInp.value.trim()));
 
   // callsign + server, remembered across visits
   const nameInp = $('nameInp');
@@ -492,9 +523,32 @@ function buildMenu() {
   });
   const srvInp = $('serverInp');
   srvInp.value = localStorage.getItem('bw.server') ||
-    (location.protocol === 'https:' ? 'wss://' : 'ws://') + (location.hostname || 'localhost') + ':8081';
+    // Over HTTPS (e.g. a Cloudflare tunnel) connect same-origin on 443; locally
+    // fall back to the standalone ws port.
+    (location.protocol === 'https:'
+      ? 'wss://' + location.host
+      : 'ws://' + (location.hostname || 'localhost') + ':8081');
+
+  // bot gunnery skill — lower = bots fly the same but spray their shots wide
+  const botAimInp = $('botAimInp');
+  const botAimVal = $('botAimVal');
+  const savedAim = localStorage.getItem('bw.botAim');
+  if (savedAim !== null) botAimInp.value = savedAim;
+  const applyBotAim = () => {
+    botAimVal.textContent = botAimInp.value + '%';
+    bots.aimSkill = botAimInp.value / 100;
+    localStorage.setItem('bw.botAim', botAimInp.value);
+  };
+  botAimInp.addEventListener('input', applyBotAim);
+  applyBotAim();
 
   $('garageBtn').addEventListener('click', () => garage.open());
+
+  // lobby + match-over controls
+  $('lobbyStart').addEventListener('click', () => { if (net) net.startGame(); });
+  $('overAgain').addEventListener('click', () => { if (net) net.startGame(); });
+  $('lobbyLeave').addEventListener('click', leaveOnline);
+  $('overLeave').addEventListener('click', leaveOnline);
 
   $('flyBtn').addEventListener('click', async () => {
     input.invert = $('invertChk').checked;
@@ -505,6 +559,8 @@ function buildMenu() {
       const btn = $('flyBtn');
       btn.disabled = true;
       btn.textContent = 'CONNECTING…';
+      const room = roomInp.value.replace(/\D/g, '').slice(0, 4);
+      const team = teamSel.value === 'team' ? (teamNameInp.value.trim() || 'Squad') : null;
       try {
         if (net) net.disconnect();
         net = new Net(scene, combat);
@@ -514,15 +570,26 @@ function buildMenu() {
           plane: def.id,
           paint: paintFor(def),
           hp: combatStats(def).hp,
+          room,
+          team,
         });
       } catch (e) {
-        showMsg('⚠ Can\'t reach server\n' + url, 3500);
+        const msgs = {
+          'no-room': '⚠ Room ' + (e.code || room) + ' not found',
+          'room-full': '⚠ Room is full (100 pilots max)',
+          'team-full': '⚠ Team "' + (e.team || team) + '" is full (4 max)',
+        };
+        showMsg(msgs[e.reason] || ('⚠ Can\'t reach server\n' + url), 3500);
         btn.disabled = false;
         btn.textContent = 'TAKE OFF ▶';
         return;
       }
       btn.disabled = false;
       btn.textContent = 'TAKE OFF ▶';
+      // join a match already in progress, otherwise wait in the lobby
+      if (net.state === 'playing') beginMatch(net.remainingMs);
+      else showLobby();
+      return;
     }
     startFlight(parseInt(sel.value, 10));
   });
@@ -548,10 +615,14 @@ function wireNet(n) {
   n.on('scores', list => {
     scores.clear();
     for (const s of list) {
-      scores.set(s.id, { name: s.id === n.id ? (myName || 'You') : s.name, kills: s.kills, deaths: s.deaths });
+      scores.set(s.id, { name: s.id === n.id ? (myName || 'You') : s.name, team: s.team || null, kills: s.kills, deaths: s.deaths });
     }
     if (sbOpen) renderScoreboard();
+    if (!$('matchOver').classList.contains('hidden')) renderMatchOver();
   });
+  n.on('lobby', renderLobby);
+  n.on('start', ({ ms }) => beginMatch(ms));
+  n.on('over', () => endMatchUI());
 }
 
 function openMenu() {
@@ -562,9 +633,84 @@ function openMenu() {
   input.showTouch(false);
 }
 
-function startFlight(spawnIdx) {
+// ---------------------------------------------------------------- multiplayer lobby
+function showLobby() {
+  menuOpen = true;
+  menuEl.classList.add('hidden');
+  $('matchOver').classList.add('hidden');
+  $('matchTimer').classList.add('hidden');
+  $('hud').classList.add('hidden');
+  $('lobby').classList.remove('hidden');
+  $('lobbyCode').innerHTML = `ROOM <b>${net ? net.room : '----'}</b>`;
+  renderLobby(lobbyData);
+  input.unlockMouse();
+  input.showTouch(false);
+}
+
+function renderLobby(d) {
+  lobbyData = d;
+  const rows = d.list.map(p => `<div class="lobbyRow ${p.id === (net && net.id) ? 'me' : ''}">
+      <span>${p.host ? '👑 ' : ''}${p.name}${p.id === (net && net.id) ? ' (you)' : ''}</span>
+      <span class="lobbyTeam">${p.team ? '👥 ' + p.team : '🦅 solo'}</span></div>`).join('');
+  $('lobbyList').innerHTML = `<div class="lobbyCount">${d.list.length}/100 pilots</div>${rows}`;
+  const isHost = !!d.host;
+  $('lobbyStart').classList.toggle('hidden', !isHost);
+  $('lobbyWait').classList.toggle('hidden', isHost);
+}
+
+function beginMatch(ms) {
+  $('lobby').classList.add('hidden');
+  $('matchOver').classList.add('hidden');
+  matchActive = true;
+  matchEndsAt = performance.now() + (ms || 0);
+  $('matchTimer').classList.remove('hidden');
+  startFlight(parseInt($('spawnSel').value, 10));
+}
+
+function endMatchUI() {
+  matchActive = false;
+  menuOpen = true; // freeze the world behind the results
+  $('matchTimer').classList.add('hidden');
+  renderMatchOver();
+  $('matchOver').classList.remove('hidden');
+  input.unlockMouse();
+  input.showTouch(false);
+}
+
+function renderMatchOver() {
+  const rows = [...scores.values()].sort((a, b) => b.kills - a.kills || a.deaths - b.deaths);
+  const winner = rows[0];
+  const body = rows.map((s, i) => `<tr class="${s.name === (myName || 'You') ? 'me' : ''}">
+      <td>${i === 0 ? '🏆' : i + 1}</td><td>${s.name}</td><td>${s.team || '—'}</td>
+      <td>${s.kills}</td><td>${s.deaths}</td></tr>`).join('');
+  $('matchOverBoard').innerHTML =
+    `${winner ? `<div class="overWinner">🏆 ${winner.name} wins — ${winner.kills} kills</div>` : ''}
+    <table><tr><th>#</th><th>PILOT</th><th>TEAM</th><th>KILLS</th><th>DEATHS</th></tr>${body}</table>`;
+  const isHost = !!(net && net.host);
+  $('overAgain').classList.toggle('hidden', !isHost);
+  $('overWait').classList.toggle('hidden', isHost);
+}
+
+function leaveOnline() {
+  if (net) { net.disconnect(); net = null; }
+  matchActive = false;
   scores.clear();
-  ensureScore('me', myName || 'You');
+  $('lobby').classList.add('hidden');
+  $('matchOver').classList.add('hidden');
+  $('matchTimer').classList.add('hidden');
+  $('hud').classList.add('hidden');
+  $('combatBar').classList.add('hidden');
+  openMenu();
+}
+
+function startFlight(spawnIdx) {
+  // online scores are owned by the server; only reset them for local modes
+  if (mode !== 'online') {
+    scores.clear();
+    ensureScore('me', myName || 'You');
+    matchActive = false;
+    $('matchTimer').classList.add('hidden');
+  }
   state.ultra = 0;
   state.heat = 0;
   state.overheat = false;
@@ -607,7 +753,15 @@ function startFlight(spawnIdx) {
     bots.clear();
   }
   if (mode !== 'online' && net) { net.disconnect(); net = null; }
-  if (mode === 'online') showMsg('🌐 Arena joined — watch your six!', 3200);
+  const hudRoom = $('hudRoom');
+  if (mode === 'online' && net) {
+    const sq = net.team ? `👥 ${net.team}` : '🦅 SOLO';
+    hudRoom.innerHTML = `🌐 ROOM <b>${net.room}</b> · ${sq}`;
+    hudRoom.classList.remove('hidden');
+    showMsg(`🌐 Room ${net.room} · ${net.team ? 'squad ' + net.team : 'solo'}\nShare the code — watch your six!`, 4200);
+  } else {
+    hudRoom.classList.add('hidden');
+  }
 }
 
 function spawnAt(x, z, opts = {}) {
@@ -1162,6 +1316,15 @@ function updateHUD(dt) {
   if (hudTimer > 0) return;
   hudTimer = 0.12;
 
+  if (matchActive) {
+    const remain = Math.max(0, matchEndsAt - performance.now());
+    const mm = Math.floor(remain / 60000);
+    const ss = Math.floor((remain % 60000) / 1000);
+    const t = $('matchTimer');
+    t.textContent = `${mm}:${ss < 10 ? '0' : ''}${ss}`;
+    t.classList.toggle('low', remain < 30000);
+  }
+
   $('hudSpd').textContent = Math.round(state.speed * 10);
   const altM = state.pos.y * 88;
   $('hudAlt').textContent = altM >= 10000 ? (altM / 1000).toFixed(1) + ' km' : Math.round(altM) + ' m';
@@ -1198,6 +1361,7 @@ function updateHUD(dt) {
   }
 }
 
+
 // ---------------------------------------------------------------- buttons / keys
 $('btnMenu').addEventListener('click', openMenu);
 $('btnCam').addEventListener('click', () => { state.camMode = (state.camMode + 1) % 3; });
@@ -1212,7 +1376,11 @@ mapCanvas.addEventListener('click', () => mapCanvas.classList.toggle('big'));
 
 input.onKey['KeyC'] = () => { state.camMode = (state.camMode + 1) % 3; };
 input.onKey['KeyM'] = () => mapCanvas.classList.toggle('big');
-input.onKey['Escape'] = () => { if (!menuOpen && state.flying) openMenu(); };
+input.onKey['Escape'] = () => {
+  if (menuOpen || !state.flying) return;
+  if (mode === 'online') leaveOnline(); // quit the match back to the menu
+  else openMenu();
+};
 input.onKey['Tab'] = () => { if (!menuOpen && state.flying) toggleScoreboard(); };
 input.onKey['KeyF'] = () => {
   if (!canCombat() || state.grounded || state.bombCool > 0) return;

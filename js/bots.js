@@ -24,6 +24,10 @@ const AZ = new THREE.Vector3(0, 0, 1);
 const ZERO = new THREE.Vector3();
 const tmpV = new THREE.Vector3(), tmpV2 = new THREE.Vector3();
 const tmpM = new THREE.Matrix4(), tmpQ = new THREE.Quaternion(), rollQ = new THREE.Quaternion();
+const tmpE = new THREE.Euler(), aimQ = new THREE.Quaternion();
+
+// biggest aim error (radians) a fully "dumb" gunner can be off by — ~17°
+const MAX_AIM_ERR = 0.30;
 
 export class Bots {
   constructor(scene, combat) {
@@ -31,6 +35,9 @@ export class Bots {
     this.combat = combat;
     this.list = [];
     this.onKill = null; // (botId, botName, byId)
+    // gunnery skill, 0 = wild misses, 1 = razor-sharp. Only affects where shots
+    // go — bots still chase and hold formation, so they stay in the fight.
+    this.aimSkill = 0.6;
   }
 
   spawnAll(n, cx, cz) {
@@ -53,6 +60,8 @@ export class Bots {
         retarget: Math.random() * 3,
         fireCool: 0,
         burst: 0,
+        aimOff: new THREE.Quaternion(), // current shooting error, drifts over time
+        aimCool: 0,                     // when to pick a fresh aim error
         mslCool: 8 + Math.random() * 10,
         dead: false,
         respawn: 0,
@@ -151,13 +160,27 @@ export class Bots {
       b.tag.position.y += 2.6;
       for (const p of b.mesh.userData.props) p.rotation.z += dt * 30;
 
+      // shooting skill: lower aimSkill => a larger, slowly-drifting aim error
+      // is baked into where the guns/missiles actually point. Steering above is
+      // untouched, so the bot still tracks and stays in range — it just shoots
+      // wide. The error holds for ~½s so a whole burst misses together (rather
+      // than spraying randomly and tagging the target by luck).
+      b.aimCool -= dt;
+      if (b.aimCool <= 0) {
+        const spread = (1 - this.aimSkill) * MAX_AIM_ERR;
+        tmpE.set((Math.random() - 0.5) * 2 * spread, (Math.random() - 0.5) * 2 * spread, 0);
+        b.aimOff.setFromEuler(tmpE);
+        b.aimCool = 0.45 + Math.random() * 0.5;
+      }
+      aimQ.copy(b.quat).multiply(b.aimOff); // nose direction, nudged off by the error
+
       // the occasional lock-on missile when steadily behind a target —
       // gives the player MISSILE warnings to dodge, Ace Combat style
       b.mslCool -= dt;
       if (b.targetRef && b.mslCool <= 0 && dist > 35 && dist < 170) {
         const aimNow = fwdNow.angleTo(tmpV);
         if (aimNow < 0.25) {
-          this.combat.fireMissile(b.id, b.pos, b.quat, b.speed, b.targetRef);
+          this.combat.fireMissile(b.id, b.pos, aimQ, b.speed, b.targetRef);
           b.mslCool = 11 + Math.random() * 9;
         }
       }
@@ -168,7 +191,7 @@ export class Bots {
         const aim = fwdNow.angleTo(tmpV); // tmpV still holds the lead direction
         if (aim < 0.14 && b.fireCool <= 0) {
           b.burst -= 0.13;
-          this.combat.fireGuns(b.id, b.pos, b.quat, b.speed, b.def.guns, 5);
+          this.combat.fireGuns(b.id, b.pos, aimQ, b.speed, b.def.guns, 5);
           if (b.burst <= 0) {
             b.fireCool = 1.1 + Math.random() * 1.2; // pause between bursts
             b.burst = 0.8 + Math.random() * 0.6;
