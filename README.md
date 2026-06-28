@@ -4,8 +4,16 @@ A Minecraft-style flight simulator for the browser. Fly eleven blocky
 aircraft over the **entire Earth** — every continent, ocean, mountain range,
 desert, rainforest and 30 major cities, generated as voxel terrain that
 streams in around you as you fly. Then arm up: machine guns, bombs and a
-chargeable ULTRA strike, against AI rivals offline or other players online.
+chargeable ULTRA strike, against rivals offline or other players online.
 Works on desktop and mobile (touch controls).
+
+<img src="./images/image1.png" alt="image 1" with="250px"/>
+<img src="./images/image2.png" alt="image 1" with="250px"/>
+<img src="./images/image3.png" alt="image 1" with="250px"/>
+<img src="./images/image4.png" alt="image 1" with="250px"/>
+<img src="./images/image5.png" alt="image 1" with="250px"/>
+
+
 
 ## Run it
 
