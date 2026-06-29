@@ -277,8 +277,62 @@ export const PLANES = [
   },
 ];
 
-// paint: { primary?, secondary? } hex overrides from the garage
-export function buildPlaneMesh(def, paint) {
+// Concatenate same-attribute indexed geometries (BoxGeometry: position + normal,
+// uv dropped) into one BufferGeometry. A self-contained mini mergeGeometries so
+// we don't pull in the three addons bundle.
+function mergeGeos(geos) {
+  let vCount = 0, iCount = 0;
+  for (const g of geos) { vCount += g.attributes.position.count; iCount += g.index.count; }
+  const pos = new Float32Array(vCount * 3);
+  const nrm = new Float32Array(vCount * 3);
+  const idx = vCount > 65535 ? new Uint32Array(iCount) : new Uint16Array(iCount);
+  let vo = 0, io = 0;
+  for (const g of geos) {
+    pos.set(g.attributes.position.array, vo * 3);
+    nrm.set(g.attributes.normal.array, vo * 3);
+    const gi = g.index.array;
+    for (let i = 0; i < gi.length; i++) idx[io + i] = gi[i] + vo;
+    vo += g.attributes.position.count;
+    io += gi.length;
+  }
+  const merged = new THREE.BufferGeometry();
+  merged.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  merged.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+  merged.setIndex(new THREE.BufferAttribute(idx, 1));
+  return merged;
+}
+
+// Collapse the plane's static body boxes into one merged mesh per material so a
+// plane draws in a handful of calls instead of ~20. Spinning props (Groups in
+// userData.props) are left untouched so they keep rotating.
+//
+// NOTE: only safe for planes that never break into per-box debris. The local
+// player's plane is NEVER merged — explodePlane() in main.js scatters its
+// individual box meshes on a crash. Remotes and bots just boom + vanish, so
+// they merge freely.
+function collapseBody(g) {
+  const bodies = g.children.filter(c => c.isMesh);
+  if (bodies.length < 2) return;
+  const byMat = new Map();
+  for (const m of bodies) {
+    m.updateMatrix();
+    const geo = m.geometry.clone().applyMatrix4(m.matrix);
+    geo.deleteAttribute('uv'); // unused by MeshLambert without a texture map
+    if (!byMat.has(m.material)) byMat.set(m.material, []);
+    byMat.get(m.material).push(geo);
+  }
+  for (const m of bodies) { g.remove(m); m.geometry.dispose(); }
+  for (const [mat, geos] of byMat) {
+    g.add(new THREE.Mesh(mergeGeos(geos), mat));
+    geos.forEach(x => x.dispose());
+  }
+}
+
+// paint: { primary?, secondary? } hex overrides from the garage.
+// merge: collapse static boxes for fewer draw calls — ONLY for planes that
+// never spawn per-box debris (remotes, bots). Never pass true for the local
+// player's plane or its crash break-up loses the individual voxels.
+export function buildPlaneMesh(def, paint, merge = false) {
   const g = new THREE.Group();
   g.userData.props = [];
   if (paint && def.paint) {
@@ -288,6 +342,7 @@ export function buildPlaneMesh(def, paint) {
   }
   def.build(g);
   paintRemap = null;
+  if (merge) collapseBody(g);
   return g;
 }
 

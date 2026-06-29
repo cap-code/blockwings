@@ -13,7 +13,7 @@ const $ = id => document.getElementById(id);
 
 // ---------------------------------------------------------------- renderer
 const canvas = $('game');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: !IS_TOUCH });
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: !IS_TOUCH, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 

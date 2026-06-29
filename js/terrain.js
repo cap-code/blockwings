@@ -193,10 +193,15 @@ export class ChunkManager {
       }
     }
     want.sort((a, b) => a[0] - b[0]);
+    // Build nearest-first, but stop once this frame's time budget is spent so a
+    // burst of missing chunks can't stall a frame and jolt the camera. `budget`
+    // stays a hard ceiling; ~4 ms keeps us comfortably inside a 60 fps frame.
     let made = 0;
+    const t0 = performance.now();
     for (const [, cx, cz] of want) {
       this.ensure(cx, cz);
       if (++made >= this.budget) break;
+      if (performance.now() - t0 > 4) break;
     }
     // drop far chunks
     const drop = (R + 3) * (R + 3);

@@ -48,7 +48,7 @@ export class Bots {
         id: 'bot' + i,
         name: NAMES[i % NAMES.length],
         def,
-        mesh: buildPlaneMesh(def, PAINTS[i % PAINTS.length]),
+        mesh: buildPlaneMesh(def, PAINTS[i % PAINTS.length], true), // merge: bots never debris-break
         tag: makeNameTag(NAMES[i % NAMES.length], '#ff9c6a'),
         pos: new THREE.Vector3(),
         quat: new THREE.Quaternion(),

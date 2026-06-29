@@ -8,9 +8,7 @@
 import * as THREE from 'three';
 import { planeById, buildPlaneMesh } from './planes.js';
 import { makeNameTag } from './combat.js';
-
-const LERP_DELAY = 0.15; // seconds in the past remote planes are rendered
-const SEND_HZ = 12;
+import { encodeState, encodeFire, encodeHit, decode } from './proto.js';
 
 export class Net {
   constructor(scene, combat) {
@@ -26,8 +24,6 @@ export class Net {
     this.remainingMs = 0; // time left when joining a match already in progress
     this.remotes = new Map(); // id -> remote
     this.handlers = {};       // myhp, kill, respawn, scores, feed
-    this.sendT = 0;
-    this.now = 0;
   }
 
   on(type, fn) { this.handlers[type] = fn; }
@@ -37,6 +33,7 @@ export class Net {
     return new Promise((resolve, reject) => {
       let settled = false;
       try { this.ws = new WebSocket(url); } catch (e) { return reject(e); }
+      this.ws.binaryType = 'arraybuffer'; // hot-path frames arrive as ArrayBuffer
       const timer = setTimeout(() => {
         if (!settled) { settled = true; this.ws.close(); reject(new Error('timeout')); }
       }, 6000);
@@ -44,6 +41,13 @@ export class Net {
         this.ws.send(JSON.stringify({ t: 'join', ...profile }));
       };
       this.ws.onmessage = ev => {
+        // binary frames are the hot path (state/fire/hp) — decode and dispatch;
+        // text frames are JSON control/lobby traffic.
+        if (typeof ev.data !== 'string') {
+          const bm = decode(ev.data);
+          if (bm) this.msg(bm);
+          return;
+        }
         const m = JSON.parse(ev.data);
         if (m.t === 'welcome' && !settled) {
           settled = true;
@@ -107,9 +111,7 @@ export class Net {
       case 's': {
         const r = this.remotes.get(m.id);
         if (!r) break;
-        r.buf.push({ t: this.now, p: m.p, q: m.q });
-        if (r.buf.length > 30) r.buf.shift();
-        r.speed = m.v || 0;
+        r.last = { p: m.p, q: m.q }; // newest pose; rendered as-is, no buffering
         break;
       }
       case 'fire': {
@@ -152,7 +154,7 @@ export class Net {
         if (r) {
           r.alive = true;
           r.hp = m.hp;
-          r.buf.length = 0;
+          r.last = null;
           r.tag.userData.setHP(r.hp, r.hpMax);
           r.mesh.visible = r.tag.visible = true;
         }
@@ -186,7 +188,7 @@ export class Net {
   addRemote(p) {
     if (this.remotes.has(p.id) || p.id === this.id) return;
     const def = planeById(p.plane);
-    const mesh = buildPlaneMesh(def, p.paint);
+    const mesh = buildPlaneMesh(def, p.paint, true); // merge: remotes never debris-break
     // teammates wear a green nametag, everyone else the usual blue
     const ally = this.team && p.team === this.team;
     const tag = makeNameTag((ally ? '🟢 ' : '') + (p.name || 'pilot'), ally ? '#7af07a' : '#7ad7ff');
@@ -195,7 +197,7 @@ export class Net {
     this.scene.add(tag);
     this.remotes.set(p.id, {
       id: p.id, name: p.name || 'pilot', team: p.team || null, def, mesh, tag,
-      buf: [], speed: 0, hp: p.hp ?? def.stats.hp, hpMax: def.stats.hp,
+      last: null, hp: p.hp ?? def.stats.hp, hpMax: def.stats.hp,
       alive: p.alive !== false,
     });
   }
@@ -207,63 +209,31 @@ export class Net {
 
   sendState(pos, quat, speed) {
     if (!this.connected) return;
-    this.ws.send(JSON.stringify({
-      t: 's',
-      p: [+pos.x.toFixed(2), +pos.y.toFixed(2), +pos.z.toFixed(2)],
-      q: [+quat.x.toFixed(3), +quat.y.toFixed(3), +quat.z.toFixed(3), +quat.w.toFixed(3)],
-      v: Math.round(speed),
-    }));
+    this.ws.send(encodeState(pos, quat, speed));
   }
 
   sendFire(kind, pos, quat, speed, tgt = null) {
     if (!this.connected) return;
-    this.ws.send(JSON.stringify({
-      t: 'fire', kind,
-      p: [+pos.x.toFixed(2), +pos.y.toFixed(2), +pos.z.toFixed(2)],
-      q: [+quat.x.toFixed(3), +quat.y.toFixed(3), +quat.z.toFixed(3), +quat.w.toFixed(3)],
-      v: Math.round(speed),
-      tgt,
-    }));
+    this.ws.send(encodeFire(kind, pos, quat, speed, tgt));
   }
 
   sendHit(target, dmg, kind) {
     if (!this.connected) return;
-    this.ws.send(JSON.stringify({ t: 'hit', target, dmg, kind }));
+    this.ws.send(encodeHit(target, dmg)); // kind is shooter-side only; server ignores it
   }
 
-  // interpolate remote planes; returns true every SEND_HZ tick so the caller
-  // knows when to push its own state
+  // push our own state every frame and snap remote planes to their newest pose
   update(dt, localPos, localQuat, localSpeed) {
-    this.now += dt;
-    this.sendT -= dt;
-    if (this.sendT <= 0) {
-      this.sendT = 1 / SEND_HZ;
-      this.sendState(localPos, localQuat, localSpeed);
-    }
-    const rt = this.now - LERP_DELAY;
+    this.sendState(localPos, localQuat, localSpeed);
     for (const [, r] of this.remotes) {
-      if (!r.buf.length || !r.alive) continue;
-      // find the two snapshots bracketing render time
-      let a = r.buf[0], b = r.buf[r.buf.length - 1];
-      for (let i = r.buf.length - 1; i >= 0; i--) {
-        if (r.buf[i].t <= rt) { a = r.buf[i]; b = r.buf[Math.min(i + 1, r.buf.length - 1)]; break; }
-      }
-      const span = b.t - a.t;
-      const f = span > 1e-4 ? Math.max(0, Math.min(1, (rt - a.t) / span)) : 1;
-      r.mesh.position.set(
-        a.p[0] + (b.p[0] - a.p[0]) * f,
-        a.p[1] + (b.p[1] - a.p[1]) * f,
-        a.p[2] + (b.p[2] - a.p[2]) * f,
-      );
-      const qa = new THREE.Quaternion(...a.q), qb = new THREE.Quaternion(...b.q);
-      qa.slerp(qb, f);
-      r.mesh.quaternion.copy(qa);
+      if (!r.last || !r.alive) continue;
+      const { p, q } = r.last;
+      r.mesh.position.set(p[0], p[1], p[2]);
+      r.mesh.quaternion.set(q[0], q[1], q[2], q[3]);
       r.mesh.visible = r.tag.visible = true;
       r.tag.position.copy(r.mesh.position);
       r.tag.position.y += 2.6;
-      for (const p of r.mesh.userData.props) p.rotation.z += dt * 30;
-      // drop snapshots that are too old to matter
-      while (r.buf.length > 2 && r.buf[1].t < rt) r.buf.shift();
+      for (const prop of r.mesh.userData.props) prop.rotation.z += dt * 30;
     }
   }
 }

@@ -101,6 +101,74 @@ function broadcast(room, obj, except = null) {
   }
 }
 
+// Binary hot-path relay. The wire layout is mirrored in js/proto.js — keep both
+// in sync. Frames arrive here as Buffers (isBinary === true); JSON control
+// traffic arrives as text and is handled separately.
+const OP_S = 1, OP_FIRE = 2, OP_HIT = 3, OP_HP = 4;
+const idNum = id => +String(id).slice(1) | 0; // 'p7' → 7
+
+function broadcastBin(room, buf, except = null) {
+  for (const [ws] of room.players) {
+    if (ws !== except && ws.readyState === 1) ws.send(buf);
+  }
+}
+
+// State/fire are pure relays: insert the sender's 2-byte id right after the
+// opcode and forward the original payload untouched — no decode/re-encode.
+function reframeWithId(data, n) {
+  const out = Buffer.allocUnsafe(data.length + 2);
+  out[0] = data[0];
+  out.writeUInt16LE(n, 1);
+  data.copy(out, 3, 1); // payload bytes (everything after the opcode)
+  return out;
+}
+
+function encodeHp(idN, hp, byN) {
+  const b = Buffer.allocUnsafe(7);
+  b[0] = OP_HP;
+  b.writeUInt16LE(idN, 1);
+  b.writeInt16LE(Math.max(-32768, Math.min(32767, hp)), 3);
+  b.writeUInt16LE(byN, 5);
+  return b;
+}
+
+function handleBinary(ws, data) {
+  const me = ws.player, room = ws.room;
+  if (!me || !room || data.length < 1) return;
+  const op = data[0];
+
+  if (op === OP_S || op === OP_FIRE) {
+    broadcastBin(room, reframeWithId(data, idNum(me.id)), ws);
+    return;
+  }
+
+  if (op === OP_HIT) {
+    // shooter-authoritative damage report — only during a live match
+    if (room.state !== 'playing' || data.length < 4) return;
+    const targetId = 'p' + data.readUInt16LE(1);
+    const dmg = Math.max(0, Math.min(150, data[3]));
+    let target = null;
+    for (const p of room.players.values()) if (p.id === targetId) { target = p; break; }
+    if (!target || !target.alive || !me.alive || dmg === 0) return;
+    if (target.team && me.team && target.team === me.team) return; // no friendly fire
+    target.hp -= dmg;
+    broadcastBin(room, encodeHp(idNum(target.id), target.hp, idNum(me.id)));
+    if (target.hp <= 0) {
+      target.alive = false;
+      target.deaths++;
+      me.kills++;
+      broadcast(room, { t: 'kill', id: target.id, by: me.id, idName: target.name, byName: me.name });
+      broadcast(room, { t: 'scores', list: scoreList(room) });
+      setTimeout(() => {
+        if (![...room.players.values()].includes(target)) return; // left meanwhile
+        target.alive = true;
+        target.hp = target.hpMax;
+        broadcast(room, { t: 'respawn', id: target.id, hp: target.hp });
+      }, RESPAWN_MS);
+    }
+  }
+}
+
 function scoreList(room) {
   return [...room.players.values()].map(p => ({ id: p.id, name: p.name, team: p.team, kills: p.kills, deaths: p.deaths }));
 }
@@ -109,11 +177,15 @@ function publicInfo(p) {
   return { id: p.id, name: p.name, team: p.team, plane: p.plane, paint: p.paint, hp: p.hp, alive: p.alive };
 }
 
-wss.on('connection', ws => {
+wss.on('connection', (ws, req) => {
+  // Disable Nagle's algorithm: our frames are tiny (<1 KB) and latency-critical,
+  // so we never want the kernel to batch them. Saves up to ~40 ms per send.
+  req.socket.setNoDelay(true);
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
 
-  ws.on('message', data => {
+  ws.on('message', (data, isBinary) => {
+    if (isBinary) { handleBinary(ws, data); return; }
     let m;
     try { m = JSON.parse(data); } catch { return; }
     const me = ws.player || null;
@@ -179,35 +251,7 @@ wss.on('connection', ws => {
       if (me.id === room.hostId && room.state === 'lobby') startMatch(room);
       return;
     }
-
-    if (m.t === 's') {
-      broadcast(room, { t: 's', id: me.id, p: m.p, q: m.q, v: m.v }, ws);
-    } else if (m.t === 'fire') {
-      broadcast(room, { t: 'fire', id: me.id, kind: m.kind, p: m.p, q: m.q, v: m.v, tgt: m.tgt || null }, ws);
-    } else if (m.t === 'hit') {
-      // shooter-authoritative damage report — only during a live match
-      if (room.state !== 'playing') return;
-      let target = null;
-      for (const p of room.players.values()) if (p.id === m.target) { target = p; break; }
-      const dmg = Math.max(0, Math.min(150, m.dmg | 0));
-      if (!target || !target.alive || !me.alive || dmg === 0) return;
-      if (target.team && me.team && target.team === me.team) return; // no friendly fire
-      target.hp -= dmg;
-      broadcast(room, { t: 'hp', id: target.id, hp: target.hp, by: me.id });
-      if (target.hp <= 0) {
-        target.alive = false;
-        target.deaths++;
-        me.kills++;
-        broadcast(room, { t: 'kill', id: target.id, by: me.id, idName: target.name, byName: me.name });
-        broadcast(room, { t: 'scores', list: scoreList(room) });
-        setTimeout(() => {
-          if (![...room.players.values()].includes(target)) return; // left meanwhile
-          target.alive = true;
-          target.hp = target.hpMax;
-          broadcast(room, { t: 'respawn', id: target.id, hp: target.hp });
-        }, RESPAWN_MS);
-      }
-    }
+    // state (s), fire and hit are binary now — see handleBinary().
   });
 
   ws.on('close', () => {
